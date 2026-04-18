@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable, Optional
 
 import librosa
 import torch
@@ -215,7 +216,14 @@ class ChatterboxTTS:
         exaggeration=0.5,
         cfg_weight=0.5,
         temperature=0.8,
+        progress_callback: Optional[Callable[[str], None]] = None,
     ):
+        def _emit_stage(stage: str) -> None:
+            if progress_callback is not None:
+                progress_callback(stage)
+
+        _emit_stage("Initial variable preparation")
+
         if audio_prompt_path:
             self.prepare_conditionals(audio_prompt_path, exaggeration=exaggeration)
         else:
@@ -243,6 +251,7 @@ class ChatterboxTTS:
         text_tokens = F.pad(text_tokens, (0, 1), value=eot)
 
         with torch.inference_mode():
+            _emit_stage("T3 inference")
             speech_tokens = self.t3.inference(
                 t3_cond=self.conds.t3,
                 text_tokens=text_tokens,
@@ -263,10 +272,15 @@ class ChatterboxTTS:
 
             speech_tokens = speech_tokens.to(self.device)
 
+            _emit_stage("S3 inference")
             wav, _ = self.s3gen.inference(
                 speech_tokens=speech_tokens,
                 ref_dict=self.conds.gen,
             )
+
+            _emit_stage("Post Processing")
             wav = wav.squeeze(0).detach().cpu().numpy()
             watermarked_wav = self.watermarker.apply_watermark(wav, sample_rate=self.sr)
+
+        _emit_stage("Done")
         return torch.from_numpy(watermarked_wav).unsqueeze(0)
