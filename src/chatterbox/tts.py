@@ -216,11 +216,11 @@ class ChatterboxTTS:
         exaggeration=0.5,
         cfg_weight=0.5,
         temperature=0.8,
-        progress_callback: Optional[Callable[[str], None]] = None,
+        progress_callback: Optional[Callable[[str, float | None], None]] = None,
     ):
-        def _emit_stage(stage: str) -> None:
+        def _emit_stage(stage: str, percentage: float | None = None) -> None:
             if progress_callback is not None:
-                progress_callback(stage)
+                progress_callback(stage, percentage)
 
         _emit_stage("Initial variable preparation")
 
@@ -251,7 +251,10 @@ class ChatterboxTTS:
         text_tokens = F.pad(text_tokens, (0, 1), value=eot)
 
         with torch.inference_mode():
-            _emit_stage("T3 inference")
+            def _emit_t3_progress(percentage: float) -> None:
+                _emit_stage("T3 inference", percentage)
+
+            _emit_stage("T3 inference", 0.0)
             speech_tokens = self.t3.inference(
                 t3_cond=self.conds.t3,
                 text_tokens=text_tokens,
@@ -261,7 +264,9 @@ class ChatterboxTTS:
                 repetition_penalty=repetition_penalty,
                 min_p=min_p,
                 top_p=top_p,
+                progress_callback=_emit_t3_progress,
             )
+            _emit_stage("T3 inference", 100.0)
             # Extract only the conditional batch.
             speech_tokens = speech_tokens[0]
 
@@ -272,10 +277,16 @@ class ChatterboxTTS:
 
             speech_tokens = speech_tokens.to(self.device)
 
-            _emit_stage("S3 inference")
+            def _emit_s3_progress(current_step: int, total_steps: int) -> None:
+                # Report percentage within the S3 stage.
+                total = max(total_steps, 1)
+                _emit_stage("S3 inference", 100.0 * float(current_step) / float(total))
+
+            _emit_stage("S3 inference", 0.0)
             wav, _ = self.s3gen.inference(
                 speech_tokens=speech_tokens,
                 ref_dict=self.conds.gen,
+                progress_callback=_emit_s3_progress,
             )
 
             _emit_stage("Post Processing")
