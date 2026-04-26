@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Resemble AI
 # MIT License
 import logging
-from typing import Union, Optional, List
+from typing import Callable, Union, Optional, List
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +245,7 @@ class T3(nn.Module):
         length_penalty=1.0,
         repetition_penalty=1.2,
         cfg_weight=0.5,
+        progress_callback: Optional[Callable[[float], None]] = None,
     ):
         """
         Args:
@@ -269,6 +270,9 @@ class T3(nn.Module):
 
         # In order to use the standard HF generate method, we need to extend some methods to inject our custom logic
         # Note the llama-specific logic. Other tfmr types can be added later.
+
+        if max_new_tokens is None:
+            max_new_tokens = self.hp.max_speech_tokens
 
         self.compiled = False
 
@@ -349,7 +353,21 @@ class T3(nn.Module):
         past = output.past_key_values
 
         # ---- Generation Loop using kv_cache ----
+        # Progress goal based on text token length only (exclude start/end tokens).
+        text_len = max(1, int(text_tokens.size(-1) - 2))
+        goal_steps = min(1000, max(1, int(round(2.2 * text_len))))
+        goal_steps = min(goal_steps, int(max_new_tokens))
+        report_every = 10
+        last_progress = -1.0
+
         for i in tqdm(range(max_new_tokens), desc="Sampling", dynamic_ncols=True):
+            step_num = i + 1
+            if progress_callback is not None and step_num % report_every == 0:
+                progress = min(99.0, 100.0 * float(step_num) / float(goal_steps))
+                if progress > last_progress:
+                    progress_callback(progress)
+                    last_progress = progress
+
             logits_step = output.logits[:, -1, :]
             # CFG combine  → (1, V)
             cond   = logits_step[0:1, :]
@@ -406,6 +424,12 @@ class T3(nn.Module):
             )
             # Update the kv_cache.
             past = output.past_key_values
+
+        num_steps = len(predicted)
+        if progress_callback is not None and num_steps > 0 and num_steps % report_every != 0:
+            progress = min(99.0, 100.0 * float(num_steps) / float(goal_steps))
+            if progress > last_progress:
+                progress_callback(progress)
 
         # Concatenate all predicted tokens along the sequence dimension.
         predicted_tokens = torch.cat(predicted, dim=1)  # shape: (B, num_tokens)

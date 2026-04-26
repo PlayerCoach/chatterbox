@@ -13,7 +13,7 @@
 # limitations under the License.
 import logging
 import random
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 import torch
@@ -140,7 +140,8 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
                   finalize,
                   n_timesteps=10,
                   noised_mels=None,
-                  meanflow=False):
+                  meanflow=False,
+                  progress_callback: Optional[Callable[[int, int], None]] = None):
         # token: (B, n_toks)
         # token_len: (B,)
         B = token.size(0)
@@ -192,6 +193,7 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
             n_timesteps=n_timesteps,
             noised_mels=noised_mels,
             meanflow=meanflow,
+            progress_callback=progress_callback,
         )
         feat = feat[:, :, mel_len1:]
         assert feat.shape[2] == mel_len2

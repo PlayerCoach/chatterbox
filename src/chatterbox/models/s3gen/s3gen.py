@@ -18,7 +18,7 @@ import numpy as np
 import torch
 import torchaudio as ta
 from functools import lru_cache
-from typing import Optional
+from typing import Callable, Optional
 
 from ..s3tokenizer import S3_SR, SPEECH_VOCAB_SIZE, S3Tokenizer
 from .const import S3GEN_SR
@@ -182,6 +182,7 @@ class S3Token2Mel(torch.nn.Module):
         finalize: bool = False,
         speech_token_lens=None,
         noised_mels=None,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
     ):
         """
         Generate waveforms from S3 speech tokens and a reference waveform, which the speaker timbre is inferred from.
@@ -224,6 +225,7 @@ class S3Token2Mel(torch.nn.Module):
             noised_mels=noised_mels,
             n_timesteps=n_cfm_timesteps,
             meanflow=self.meanflow,
+            progress_callback=progress_callback,
             **ref_dict,
         )
         return output_mels
@@ -309,6 +311,7 @@ class S3Token2Wav(S3Token2Mel):
         n_cfm_timesteps = None,
         finalize: bool = False,
         speech_token_lens=None,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
     ):
         n_cfm_timesteps = n_cfm_timesteps or (2 if self.meanflow else 10)
         noise = None
@@ -317,6 +320,7 @@ class S3Token2Wav(S3Token2Mel):
         output_mels = super().forward(
             speech_tokens, speech_token_lens=speech_token_lens, ref_wav=ref_wav, ref_sr=ref_sr, ref_dict=ref_dict,
             n_cfm_timesteps=n_cfm_timesteps, finalize=finalize, noised_mels=noise,
+            progress_callback=progress_callback,
         )
         return output_mels
 
@@ -339,6 +343,7 @@ class S3Token2Wav(S3Token2Mel):
         drop_invalid_tokens=True,
         n_cfm_timesteps=None,
         speech_token_lens=None,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
     ):
         # hallucination prevention, drop special tokens
         # if drop_invalid_tokens:
@@ -352,6 +357,7 @@ class S3Token2Wav(S3Token2Mel):
             ref_dict=ref_dict,
             n_cfm_timesteps=n_cfm_timesteps,
             finalize=True,
+            progress_callback=progress_callback,
         )
         output_mels = output_mels.to(dtype=self.dtype) # FIXME (fp16 mode) is this still needed?
         output_wavs, output_sources = self.hift_inference(output_mels, None)

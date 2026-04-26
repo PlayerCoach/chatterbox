@@ -14,6 +14,7 @@
 import threading
 import torch
 import torch.nn.functional as F
+from typing import Callable, Optional
 from .matcha.flow_matching import BASECFM
 from .configs import CFM_PARAMS
 from tqdm import tqdm
@@ -39,7 +40,7 @@ class ConditionalCFM(BASECFM):
         self.estimator = estimator
 
     @torch.inference_mode()
-    def forward(self, mu, mask, n_timesteps, temperature=1.0, spks=None, cond=None, prompt_len=0, flow_cache=torch.zeros(1, 80, 0, 2)):
+    def forward(self, mu, mask, n_timesteps, temperature=1.0, spks=None, cond=None, prompt_len=0, flow_cache=torch.zeros(1, 80, 0, 2), progress_callback: Optional[Callable[[int, int], None]] = None):
         """Forward diffusion
 
         Args:
@@ -75,7 +76,7 @@ class ConditionalCFM(BASECFM):
             t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
         return self.solve_euler(z, t_span=t_span, mu=mu, mask=mask, spks=spks, cond=cond), flow_cache
 
-    def solve_euler(self, x, t_span, mu, mask, spks, cond, meanflow=False):
+    def solve_euler(self, x, t_span, mu, mask, spks, cond, meanflow=False, progress_callback: Optional[Callable[[int, int], None]] = None):
         """
         Fixed euler solver for ODEs.
         Args:
@@ -105,7 +106,8 @@ class ConditionalCFM(BASECFM):
         cond_in = torch.zeros([2 * B, 80, T], device=x.device, dtype=x.dtype)
         r_in    = torch.zeros([2 * B       ], device=x.device, dtype=x.dtype) # (only used for meanflow)
 
-        for t, r in zip(t_span[:-1], t_span[1:]):
+        total_steps = max(int(t_span.shape[0]) - 1, 1)
+        for step, (t, r) in enumerate(zip(t_span[:-1], t_span[1:]), start=1):
             t = t.unsqueeze(dim=0)
             r = r.unsqueeze(dim=0)
             # Shapes:
@@ -139,6 +141,9 @@ class ConditionalCFM(BASECFM):
             dxdt = ((1.0 + self.inference_cfg_rate) * dxdt - self.inference_cfg_rate * cfg_dxdt)
             dt = r - t
             x = x + dt * dxdt
+
+            if progress_callback is not None:
+                progress_callback(step, total_steps)
 
 
 
@@ -193,7 +198,7 @@ class CausalConditionalCFM(ConditionalCFM):
         self.rand_noise = None
 
     @torch.inference_mode()
-    def forward(self, mu, mask, n_timesteps, temperature=1.0, spks=None, cond=None, noised_mels=None, meanflow=False):
+    def forward(self, mu, mask, n_timesteps, temperature=1.0, spks=None, cond=None, noised_mels=None, meanflow=False, progress_callback: Optional[Callable[[int, int], None]] = None):
         """Forward diffusion
 
         Args:
@@ -228,19 +233,22 @@ class CausalConditionalCFM(ConditionalCFM):
         #   because they were distilled with CFG outputs. We would need to add another hparam and
         #   change the conditional logic here if we want to use CFG inference with a meanflow model.
         if meanflow:
-            return self.basic_euler(z, t_span=t_span, mu=mu, mask=mask, spks=spks, cond=cond), None
+            return self.basic_euler(z, t_span=t_span, mu=mu, mask=mask, spks=spks, cond=cond, progress_callback=progress_callback), None
 
-        return self.solve_euler(z, t_span=t_span, mu=mu, mask=mask, spks=spks, cond=cond, meanflow=meanflow), None
+        return self.solve_euler(z, t_span=t_span, mu=mu, mask=mask, spks=spks, cond=cond, meanflow=meanflow, progress_callback=progress_callback), None
 
-    def basic_euler(self, x, t_span, mu, mask, spks, cond):
+    def basic_euler(self, x, t_span, mu, mask, spks, cond, progress_callback: Optional[Callable[[int, int], None]] = None):
         in_dtype = x.dtype
         x, t_span, mu, mask, spks, cond = cast_all(x, t_span, mu, mask, spks, cond, dtype=self.estimator.dtype)
 
         print("S3 Token -> Mel Inference...")
-        for t, r in tqdm(zip(t_span[..., :-1], t_span[..., 1:]), total=t_span.shape[-1] - 1):
+        total_steps = max(int(t_span.shape[-1]) - 1, 1)
+        for step, (t, r) in enumerate(tqdm(zip(t_span[..., :-1], t_span[..., 1:]), total=total_steps), start=1):
             t, r = t[None], r[None]
             dxdt = self.estimator.forward(x, mask=mask, mu=mu, t=t, spks=spks, cond=cond, r=r)
             dt = r - t
             x = x + dt * dxdt
+            if progress_callback is not None:
+                progress_callback(step, total_steps)
 
         return x.to(in_dtype)
