@@ -1,5 +1,6 @@
 import os
 import math
+import io
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -98,6 +99,29 @@ class Conditionals:
             gen=self.gen
         )
         torch.save(arg_dict, fpath)
+
+    def to_bytes(self) -> bytes:
+        buffer = io.BytesIO()
+        torch.save(self._cpu_payload(), buffer)
+        return buffer.getvalue()
+
+    @classmethod
+    def from_bytes(cls, payload: bytes, map_location="cpu"):
+        if isinstance(map_location, str):
+            map_location = torch.device(map_location)
+        data = torch.load(io.BytesIO(payload), map_location=map_location, weights_only=True)
+        return cls(T3Cond(**data["t3"]), data["gen"]).to(device=map_location)
+
+    def _cpu_payload(self) -> dict:
+        def _cpu_value(value):
+            if torch.is_tensor(value):
+                return value.detach().cpu()
+            return value
+
+        return dict(
+            t3={k: _cpu_value(v) for k, v in self.t3.__dict__.items()},
+            gen={k: _cpu_value(v) for k, v in self.gen.items()},
+        )
 
     @classmethod
     def load(cls, fpath, map_location="cpu"):
